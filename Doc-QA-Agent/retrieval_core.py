@@ -26,28 +26,52 @@ class SiliconflowEmbedding(Embeddings):
 
 ''' 第 2 段：多格式文档加载器（按文件后缀选加载器）'''
 
+def _load_pdf(file_path):
+    """PDF：用 pypdf 逐页提取文本（不依赖 langchain-community）"""
+    from pypdf import PdfReader
+    from langchain_core.documents import Document
+    reader = PdfReader(file_path)
+    docs = []
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        docs.append(Document(page_content=text, metadata={"source": file_path, "page": i + 1}))
+    return docs
+
+
+def _load_docx(file_path):
+    """Word：用 docx2txt 提取正文（不依赖 langchain-community）"""
+    import docx2txt
+    from langchain_core.documents import Document
+    text = docx2txt.process(file_path)
+    return [Document(page_content=text, metadata={"source": file_path})]
+
+
+def _load_text(file_path):
+    """TXT / Markdown：直接用 Python 读文本（不依赖 langchain-community）"""
+    from langchain_core.documents import Document
+    with open(file_path, encoding="utf-8") as f:
+        text = f.read()
+    return [Document(page_content=text, metadata={"source": file_path})]
+
+
 def load_documents(doc_paths):
     """读取文档 → 返回 Document 列表。支持 PDF / Word / TXT / Markdown。
 
     根据文件后缀挑对应加载器：
-      .pdf   → PyPDFLoader（pypdf，逐页读文本）
-      .docx  → Docx2txtLoader（docx2txt，读 Word 正文）
-      .txt / .md → TextLoader（纯文本，要指定 utf-8 编码）
+      .pdf   → pypdf 逐页提取（见 _load_pdf）
+      .docx  → docx2txt 提取正文（见 _load_docx）
+      .txt / .md → Python 原生读取（见 _load_text）
     """
-    from langchain_community.document_loaders import (
-        TextLoader, PyPDFLoader, Docx2txtLoader
-    )
     docs_all = []
     for p in doc_paths:
         suffix = p.lower().rsplit(".", 1)[-1]  # 取后缀，如 "pdf"
         try:
             if suffix == "pdf":
-                loader = PyPDFLoader(p)
+                docs_all += _load_pdf(p)
             elif suffix == "docx":
-                loader = Docx2txtLoader(p)
+                docs_all += _load_docx(p)
             else:  # txt / md / 其他纯文本
-                loader = TextLoader(p, encoding="utf-8")
-            docs_all += loader.load()  # 累加！不能 =，否则只留最后一个文件
+                docs_all += _load_text(p)
         except Exception as e:
             print(f"⚠️ 读取文件失败：{p} → {e}")
     return docs_all

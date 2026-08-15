@@ -25,7 +25,7 @@ import config
 import retrieval_core
 
 import jieba  # 中文分词库
-from langchain_community.retrievers import BM25Retriever  # 关键字检索器
+from bm25_retriever import BM25Retriever  # 自实现的 BM25 检索器（不依赖 langchain-community）
 from langchain_classic.retrievers.ensemble import EnsembleRetriever  # 检索器融合器
 from langchain_core.tools import tool  # 工具装饰器
 from langchain.agents import create_agent  # Agent 工厂

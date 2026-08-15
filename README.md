@@ -142,3 +142,5 @@ python -m pytest tests/test_integration.py -v -m integration
 
 Python · LangChain 1.x · LangGraph 1.x · create_agent / @tool · FastAPI · Streamlit · ChromaDB · BAAI/bge-m3 · jieba / BM25（rank-bm25）· RRF · pypdf · docx2txt · SiliconFlow · Git / GitHub · python-dotenv
 
+> 💡 零弃用依赖：`langchain-community` 已于 2026-05 停服（sunset）。本项目自实现 `BM25Retriever`（`bm25_retriever.py`）与多格式加载器（pypdf / docx2txt / 原生读取），不依赖任何已停服包。
+
