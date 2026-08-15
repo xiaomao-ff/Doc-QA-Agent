@@ -24,26 +24,52 @@ class SiliconflowEmbedding(Embeddings):
         )
         return resp.data[0].embedding
 
-''' 第 2 段：建库函数（读取 -> 切块 -> 存入向量库）'''
+''' 第 2 段：多格式文档加载器（按文件后缀选加载器）'''
+from langchain_core.documents import Document
+
+def load_documents(doc_paths):
+    """读取文档 → 返回 Document 列表。支持 PDF / Word / TXT / Markdown。
+
+    根据文件后缀挑对应加载器：
+      .pdf   → PyPDFLoader（pypdf，逐页读文本）
+      .docx  → Docx2txtLoader（docx2txt，读 Word 正文）
+      .txt / .md → TextLoader（纯文本，要指定 utf-8 编码）
+    """
+    from langchain_community.document_loaders import (
+        TextLoader, PyPDFLoader, Docx2txtLoader
+    )
+    docs_all = []
+    for p in doc_paths:
+        suffix = p.lower().rsplit(".", 1)[-1]  # 取后缀，如 "pdf"
+        try:
+            if suffix == "pdf":
+                loader = PyPDFLoader(p)
+            elif suffix == "docx":
+                loader = Docx2txtLoader(p)
+            else:  # txt / md / 其他纯文本
+                loader = TextLoader(p, encoding="utf-8")
+            docs_all += loader.load()  # 累加！不能 =，否则只留最后一个文件
+        except Exception as e:
+            print(f"⚠️ 读取文件失败：{p} → {e}")
+    return docs_all
+
+''' 第 3 段：建库函数（读取 -> 切块 -> 存入向量库）'''
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter  # 文本分块器
 
-def build_vectorstore(doc_paths, persist_dir=config.PERSIST_DIR, collection_name=config.COLLECTION_NAME):
-    # 读取文件
-    from langchain_core.documents import Document
-    from langchain_community.document_loaders import TextLoader  # 文件加载器，自动识别格式（TXT / MD / PDF）(只具备读取功能)
-    docs_all = []
-    for p in doc_paths:
+def build_vectorstore(doc_paths, persist_dir=config.PERSIST_DIR, collection_name=config.COLLECTION_NAME, reset=False):
+    # 可选：重建前先清空旧 collection（上传新文档时用 True，避免新旧文档混在一起）
+    if reset:
+        import chromadb
+        client = chromadb.PersistentClient(path=persist_dir)
         try:
-            loader = TextLoader(p, encoding="utf-8") # TXT 要设 encoding="utf-8"，PDF 不用
+            client.delete_collection(collection_name)
+            print(f"🗑️ 已清空旧知识库：{collection_name}")
+        except Exception:
+            pass  # 没有旧库则跳过
 
-            # 启动加载器，读取文件，并将内容与来源（源自哪个文件）打包在一起
-            # 返回一个列表 [Document]，里面每个 Document 对象有两个属性：
-            # page_content —— 文本内容
-            # metadata —— 文件来源信息（比如文件名）
-            docs_all = loader.load()
-        except EnvironmentError as e:
-            print(f"读取文件失败：{e}")
+    # 读取文件（多格式）
+    docs_all = load_documents(doc_paths)
 
 
     # 切块
@@ -68,7 +94,7 @@ def build_vectorstore(doc_paths, persist_dir=config.PERSIST_DIR, collection_name
 
     return vectorstore  # 把建好的库还给调用者
 
-''' 第 3 端：问答层读取向量库函数 '''
+''' 第 4 段：问答层读取向量库函数 '''
 def load_vectorstore(persist_dir=config.PERSIST_DIR, embedding_fct=SiliconflowEmbedding(), collection_na=config.COLLECTION_NAME):
     # 加载已有的向量库
     load_vs = Chroma(

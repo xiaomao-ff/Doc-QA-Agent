@@ -8,6 +8,9 @@ __pycache__/
 # 项目生成的向量数据库
 chroma_db/
 
+# 用户上传的文档
+uploads/
+
 # 日志
 *.log
 
