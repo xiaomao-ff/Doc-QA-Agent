@@ -1,8 +1,9 @@
 # qa_agent.py：问答层
 
-# 方案一：LangChain 框架（Agentic RAG —— create_agent + @tool）
-# 把"知识库混合检索"封装成一个 @tool 工具，让大模型自主决定
+# 核心思路：Agentic RAG（create_agent + @tool）
+# 把"知识库混合检索"封装成一个 @tool 工具，让大模型自主决定是否检索。
 # 防幻觉靠 system_prompt 硬约束，不让模型用常识编造。
+# （LangGraph 强流程备选实现见 langgraph_v2.py）
 #
 # 本版本支持"上传文档即建库"，空库起步：
 #   启动时   init()         → 空库初始化：没有默认知识库，闲聊可直接答，知识类问题引导上传
@@ -14,7 +15,7 @@
 #   第2段  用 @tool 把 ensemble 包成 retrieve 工具，create_agent 创建 Agent
 #   第3段  init()：空库初始化（没有知识库时 retrieve 返回提示，引导用户上传）
 #   第4段  rebuild()：上传新文档后 重建向量库 + 重建 Agent
-#   第5段  ask()：可复用接口函数（历史拼进 messages = 多轮记忆）
+#   第5段  ask()：可复用接口函数（历史拼进 messages = 多轮记忆，含滑动窗口）
 #   第6段  命令行对话循环
 
 
@@ -68,23 +69,25 @@ def build_ensemble(vs):
     return ensemble
 
 
-''' 第2段：用 @tool 包检索器 + create_agent 创建 Agent → 返回 agent '''
-def build_agent(ens, kb_name="知识库"):
-    # 知识库检索工具（ @tool ）
-    @tool  # 装饰器，将下面的普通函数升级成 LangChain Tool (自动提取函数签名、docstring 发给模型)
-    def retrieve(query: str) -> str:
-        """根据用户问题，从当前知识库检索相关资料。"""  # docstring 必须是普通字符串，不能是 f-string
-        try:
-            # 空库状态：还没上传任何文档，直接告诉模型"没有知识库"
-            if ens is None:
-                print("\n⚠️ 当前没有知识库（用户还未上传文档）\n")
-                return "当前还没有任何知识库。"
-            docs = ens.invoke(query)
-            print("\n🔍 已检索知识库\n")
-            return "\n\n".join(d.page_content for d in docs)  # 把检索到的几段拼成一个长字符串返回（工具返回只能是字符串，模型才好读）
-        except Exception as e:
-            return f"检索失败：{e}"
+''' 第2段：知识库检索工具 + 用 create_agent 创建 Agent → 返回 agent '''
+# retrieve 是模块级函数，通过全局 ensemble 变量访问当前知识库
+# （改成模块级是为了能单独测试它，也避免每次 build_agent 重新定义函数）
+@tool  # 装饰器，将下面的普通函数升级成 LangChain Tool (自动提取函数签名、docstring 发给模型)
+def retrieve(query: str) -> str:
+    """根据用户问题，从当前知识库检索相关资料。"""  # docstring 必须是普通字符串，不能是 f-string
+    try:
+        # 空库状态：还没上传任何文档，直接告诉模型"没有知识库"
+        if ensemble is None:
+            print("\n⚠️ 当前没有知识库（用户还未上传文档）\n")
+            return "当前还没有任何知识库。"
+        docs = ensemble.invoke(query)
+        print("\n🔍 已检索知识库\n")
+        return "\n\n".join(d.page_content for d in docs)  # 把检索到的几段拼成一个长字符串返回（工具返回只能是字符串，模型才好读）
+    except Exception as e:
+        return f"检索失败：{e}"
 
+
+def build_agent():
     # 官方 Agent 工厂
     agent = create_agent(
         model=llm,
@@ -107,18 +110,18 @@ def init():
     # 不再自动加载默认知识库 —— 空库起步
     # ensemble=None 表示"还没有任何知识库"，retrieve 工具会返回对应提示
     ensemble = None
-    agent = build_agent(ensemble, "用户上传文档")  # 构建 Agent（闲聊可直接答，知识类问题引导上传）
+    agent = build_agent()  # 构建 Agent（闲聊可直接答，知识类问题引导上传）
     print("✅ Agent 就绪（暂无知识库，上传文档后可提问）")
 
 
 ''' 第4段：rebuild() 上传新文档后重建整个问答链路 '''
-def rebuild(doc_paths, kb_name="用户上传文档"):
+def rebuild(doc_paths):
     global ensemble, agent
     print("🔄 正在解析文档并重建知识库...")
     # 清空旧库 + 重新建库（reset=True 会先删掉旧 collection，避免新旧混一起）
     vs = retrieval_core.build_vectorstore(doc_paths, reset=True)
     ensemble = build_ensemble(vs)                       # 重建混合检索
-    agent = build_agent(ensemble, kb_name)              # 重建 Agent
+    agent = build_agent()                               # 重建 Agent
     print(f"✅ 重建完成，共 {len(doc_paths)} 个文档已入库，可以提问了")
 
 ''' 第5段：模块导入时自动初始化（命令行/API/网页 import 后直接用）'''
@@ -126,13 +129,19 @@ init()
 
 ''' 第6段：可复用的 ask() 函数（API / 网页都可以 import 它）'''
 
+MAX_HISTORY = 10  # 滑动窗口：最多携带 10 条历史消息（≈5 轮对话），防上下文无限膨胀
+
+
 def ask(question, history):
     """单轮问答：历史 + 当前问题 → 回答。
 
     ask() 是给外部用的"接口函数"：命令行、FastAPI、网页全都调它，
     保持一套问答逻辑到处复用。
+    滑动窗口：只取最近 MAX_HISTORY 条历史，太长的对话自动丢弃最旧的，
+    避免消息无限堆积把模型上下文窗口撑爆。
     """
-    messages = history + [{"role": "user", "content": question}]  # 历史 + 用户这一句（这就是"记忆"）
+    recent = history[-MAX_HISTORY:]  # 只保留最近 N 条历史（丢弃最早的消息）
+    messages = recent + [{"role": "user", "content": question}]  # 最近历史 + 用户这一句（这就是"记忆"）
     result = agent.invoke({"messages": messages})                 # 调 Agent（让它自主决定要不要检索）
     return result["messages"][-1].content                         # 取最后一条消息 = Agent 最终回答
 
@@ -152,122 +161,3 @@ if __name__ == "__main__":  # 只有直接运行本文件才进来；被 import 
         # 记下这一轮，下次循环才有上下文
         history += [{"role": "user", "content": user_input},
                     {"role": "assistant", "content": answer}]
-
-
-# ================================================================
-# 方案二：LangGraph 条件分支（Day28 思路）
-# ----------------------------------------------------------------
-# 与方案一的区别：
-#   方案一（create_agent）：模型"自主决定"要不要调工具 —— 轻量、灵活
-#   方案二（LangGraph）：把流程人为固定成"判断→检索→回答/直接答"的节点图，
-#          每一步走哪个节点由代码说了算 —— 流程可控、可插桩看日志
-# 选型话术：日常轻量问答用方案一；多步工单/审批这样的强流程场景用方案二。
-# 用法说明：把下面三引号里的代码复制出去、删掉首尾的两个 ''' 就能运行
-#   （ensemble 复用上文已建好的混合检索器）
-# ================================================================
-
-'''
-# ---------------- 方案二（LangGraph 条件分支）----------------
-
-# TypedDict：声明字典长什么样的工具
-# Annotated：给函数参数加类型提示的工具(这里用来贴 reducer 的类型)
-from typing import Annotated, TypedDict
-from langgraph.graph.message import add_messages  # add_messages：消息追加规约器
-from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import InMemorySaver  # 内存检查器：记忆存内存
-
-# 1. 状态字典模板：图里每个节点都读写这份"状态病历本"
-class QueryState(TypedDict):
-    messages: Annotated[list, add_messages]  # 对话记录，add_messages 自动追加
-    context: list[str]   # 存放本轮检索到的上下文，默认新的覆盖旧的
-    need_search: str     # route 节点写入的判决：'yes' 或 'no'
-
-# 2. 路由节点：判断用户问题是否需要检索知识库
-def route_node(state: QueryState) -> dict:
-    # 从后往前找最近一条用户消息，没有则给默认问题（防空输入）
-    question = next(
-        (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
-        None
-    ) or "刹车片多久换一次"
-    judge = llm.invoke(
-        f"判断这个问题是否需要查询汽车配件知识库才能回答。"
-        f"涉及配件具体信息(功能/类型/更换周期/保养)输出 yes，否则输出 no。"
-        f"问题：{question}"
-    )
-    return {"need_search": judge.content.strip().lower()}
-
-# 3. 检索节点：把混合检索结果塞进 context（复用上文的 ensemble）
-def retrieve_node(state: QueryState) -> dict:
-    question = next(
-        (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
-        None
-    ) or "刹车片多久换一次"
-    # 上下文寻回，只取文本内容
-    docs = ensemble.invoke(question)
-    return {"context": [d.page_content for d in docs]}
-
-# 4. 回答节点（走检索路）：只根据检索到的资料回答，没有就说没有
-def answer_node(state: QueryState) -> dict:
-    docs_block = "\n\n".join(state["context"])
-    question = next(
-        (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
-        None
-    ) or "刹车片多久换一次"
-    reply = llm.invoke([
-        SystemMessage("只根据知识库检索到的资料回答，资料里没有就说'库里没有'，禁止编造。"),
-        HumanMessage(f"资料：\n{docs_block}\n\n问题：{question}")
-    ])
-    return {"messages": [reply]}
-
-# 5. 直接回答节点（不走检索路）：闲聊等直接答
-def answer_direct_node(state: QueryState) -> dict:
-    question = next(
-        (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
-        None
-    ) or "你好"
-    reply = llm.invoke([HumanMessage(question)])
-    return {"messages": [reply]}
-
-# 6. 岔路口函数：读 need_search 决定下一步去哪
-def decide_route(state: QueryState) -> str:
-    return "retrieve" if state["need_search"] == "yes" else "answer_direct"
-
-# 7. 组装成图：节点 + 边 + 条件分支
-builder = StateGraph(QueryState)
-builder.add_node("route", route_node)
-builder.add_node("retrieve", retrieve_node)
-builder.add_node("answer", answer_node)
-builder.add_node("answer_direct", answer_direct_node)
-
-builder.add_edge(START, "route")
-# 条件分支：decide_route 返回 'retrieve' → "retrieve"节点，'answer_direct' → 直接答节点
-builder.add_conditional_edges("route", decide_route, {
-    "retrieve": "retrieve",
-    "answer_direct": "answer_direct"
-})
-builder.add_edge("retrieve", "answer")
-builder.add_edge("answer", END)
-builder.add_edge("answer_direct", END)
-
-graph = builder.compile(checkpointer=InMemorySaver())  # 挂上检查器，支持多轮记忆
-
-# 8. 对话循环：invoke 必带 config，thread_id 是会话钥匙
-while True:
-    user_input = input("你问（输 exit/q 退出）：")
-    if user_input.strip().lower() in ("exit", "q"):
-        print("再见！")
-        break
-    result = graph.invoke(
-        {
-            "messages": [HumanMessage(user_input)],
-            "context": [],
-            "need_search": ""
-        },
-        config={
-            "recursion_limit": 10,                     # 防死循环
-            "configurable": {"thread_id": "qa1"}       # 同一 id 才共享记忆
-        }
-    )
-    print("回答：", result["messages"][-1].content)
-'''

@@ -25,7 +25,6 @@ class SiliconflowEmbedding(Embeddings):
         return resp.data[0].embedding
 
 ''' 第 2 段：多格式文档加载器（按文件后缀选加载器）'''
-from langchain_core.documents import Document
 
 def load_documents(doc_paths):
     """读取文档 → 返回 Document 列表。支持 PDF / Word / TXT / Markdown。

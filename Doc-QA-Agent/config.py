@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = os.getenv("siliconflow_api")
+API_KEY = os.getenv("api_key")
 
 BASE_URL = "https://api.siliconflow.cn/v1"
 
