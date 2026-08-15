@@ -118,10 +118,3 @@ streamlit run app.py       # Streamlit 网页 → http://localhost:8501
 
 Python · LangChain 1.x · LangGraph 1.x · create_agent / @tool · FastAPI · Streamlit · ChromaDB · BAAI/bge-m3 · jieba / BM25（rank-bm25）· RRF · pypdf · docx2txt · SiliconFlow · Git / GitHub · python-dotenv
 
-## 📌 面试亮点速记
-
-- **为什么 Hybrid**：向量检索强于"换说法"、BM25 强于"精确词"，RRF 融合兼顾
-- **为什么 Agentic**：让模型自主判断是否检索，但防幻觉必须硬约束兜底
-- **上传即建库**：多格式解析器 + 按格式分发加载器 + 重建 agent（`rebuild()`）
-- **多轮记忆**：前端 session_state 存历史 + 后端拼进 messages 发送
-- **部署三坑**：requirements 位置 / Secrets / 向量库自动重建
