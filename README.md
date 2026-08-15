@@ -34,7 +34,7 @@
 ## 🏗️ 项目结构
 
 ```
-Doc-QA-Agent/            # 仓库根目录
+Doc-QA-Agent/
 ├── config.py            # 配置层：API key / 模型 / 路径（BASE_DIR 绝对定位）
 ├── retrieval_core.py    # 核心层：多格式文档解析 + Embedding + 建库/加载
 ├── qa_agent.py          # 问答层：混合检索 @tool + Agent + ask() + rebuild()
@@ -74,7 +74,8 @@ pip install -r requirements.txt
 # 2. 配置密钥（项目根 .env）
 #    siliconflow_api=sk-xxxx
 
-# 3. 运行（任选其一）
+# 3. 进入项目目录并运行（任选其一）
+cd Doc-QA-Agent
 python retrieval_core.py   # 重建默认向量库
 python qa_agent.py         # 命令行问答
 uvicorn api:app --reload   # FastAPI 接口 → http://127.0.0.1:8000/docs
@@ -97,7 +98,7 @@ streamlit run app.py       # Streamlit 网页 → http://localhost:8501
        doc_path = str(config.BASE_DIR / "data" / "汽配知识介绍.txt")
        retrieval_core.build_vectorstore([doc_path])
    ```
-4. Streamlit Cloud 中 Deploy：Main file path 填 `app.py`（项目文件就在仓库根目录）
+4. Streamlit Cloud 中 Deploy：Main file path 填 `Doc-QA-Agent/app.py`
 
 > 部署坑总结：依赖文件位置 / Secrets 密钥 / 向量库空库——三个坑各有解法，见 qa_agent.py 顶部守卫。
 
