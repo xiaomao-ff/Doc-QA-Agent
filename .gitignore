@@ -1,23 +1,17 @@
-﻿.env
-
-__pycache__/
-
+﻿# 环境与敏感信息
+.env
 .venv/
 
-AI学习计划_54天.md
+# Python 缓存
+__pycache__/
 
-chroma_data/
-
-chroma_langchain/
-
+# 项目生成的向量数据库
 chroma_db/
 
+# 日志
 *.log
 
-err.txt
-out.txt
-
-# 学习过程文件（GitHub 已移除，本地保留）
+# 旧学习项目文件（本地保留，不上传 GitHub）
 L0/
 L1/
 L2/
@@ -26,6 +20,4 @@ enterprise-projects/
 hello.py
 codex_prompt_enterprise_projects.md
 *.docx
-汽配介绍.txt
-
 .vscode/
