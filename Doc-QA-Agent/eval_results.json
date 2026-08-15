@@ -1,0 +1,50 @@
+[
+  {
+    "chunk_size": 300,
+    "n_chunks": 42,
+    "vector": {
+      "recall@5": 1.0,
+      "mrr": 0.9
+    },
+    "bm25": {
+      "recall@5": 1.0,
+      "mrr": 0.908
+    },
+    "rrf": {
+      "recall@5": 1.0,
+      "mrr": 0.95
+    }
+  },
+  {
+    "chunk_size": 200,
+    "n_chunks": 56,
+    "vector": {
+      "recall@5": 1.0,
+      "mrr": 0.927
+    },
+    "bm25": {
+      "recall@5": 0.95,
+      "mrr": 0.833
+    },
+    "rrf": {
+      "recall@5": 1.0,
+      "mrr": 0.925
+    }
+  },
+  {
+    "chunk_size": 500,
+    "n_chunks": 30,
+    "vector": {
+      "recall@5": 1.0,
+      "mrr": 0.925
+    },
+    "bm25": {
+      "recall@5": 1.0,
+      "mrr": 0.942
+    },
+    "rrf": {
+      "recall@5": 1.0,
+      "mrr": 0.942
+    }
+  }
+]

@@ -28,10 +28,14 @@
    - 后端：历史消息拼进 prompt 一起发送，Agent 记住上下文
    - **滑动窗口**：只带最近 10 条历史（≈5 轮），防长会话 token 无限膨胀
    - 复用 `ask(question, history)`：命令行 / FastAPI / Streamlit 三端共用
-6. **自动化测试（pytest）**
+ 6. **自动化测试（pytest）**
    - 单元测试：滑动窗口裁剪 / 空库工具返回值 / 检索失败兜底 / 多格式加载（不调 API，快）
    - 集成测试：空库引导 / 上传后问答 / 多轮记忆（调真实 API，`-m integration` 运行）
-7. **完整工程链路**
+ 7. **检索质量评估（Recall@k / MRR）**
+   - `eval_retrieval.py`：20 条"问题→标准答案片段"测试集，量化对比纯向量 / 纯BM25 / RRF 融合
+   - 结果：RRF 融合 MRR=0.950 > 纯BM25 0.908 > 纯向量 0.900，证明混合检索"取长补短"
+   - 参数调优：`chunk_size=300`（MRR 0.950）优于 200（0.925）与 500（0.942），确认线上默认值
+ 8. **完整工程链路**
    - 云端部署：requirements 置仓库根 + Secrets 管密钥 + 空库起步、上传即建库
 
 ---
@@ -47,6 +51,7 @@ Doc-QA-Agent/
 ├── app.py               # 展示层：Streamlit 网页（上传区 + 解析状态 + 对话记忆）
 ├── data/
 │   └── 汽配知识介绍.txt  # 示例文档（可选，不自动建库，仅供测试上传）
+├── eval_retrieval.py    # 检索质量评估：Recall@k / MRR，三路策略对比 + chunk_size 调参
 ├── uploads/             # 用户上传的文档（运行时生成）
 └── chroma_db/           # ChromaDB 持久化（git 忽略，上传文档后生成）
 ```
