@@ -18,6 +18,7 @@ st.title("📚 文档问答助手")
 with st.sidebar:
     st.header("📄 上传文档")
     st.caption("支持 PDF / Word / TXT，可多选。解析完成后即可提问。")
+    st.info("当前无默认知识库，上传文档后才能回答知识类问题；闲聊可直接回复。")
 
     # st.file_uploader：文件上传控件
     # accept_multiple_files=True → 允许一次选多个文件

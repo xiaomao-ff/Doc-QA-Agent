@@ -4,15 +4,15 @@
 # 把"知识库混合检索"封装成一个 @tool 工具，让大模型自主决定
 # 防幻觉靠 system_prompt 硬约束，不让模型用常识编造。
 #
-# 本版本支持"上传文档即重建"：
-#   启动时   init()         → 加载/重建默认向量库，构建混合检索 + Agent
+# 本版本支持"上传文档即建库"，空库起步：
+#   启动时   init()         → 空库初始化：没有默认知识库，闲聊可直接答，知识类问题引导上传
 #   上传后   rebuild(路径s) → 重新建库 + 重建 Agent（问答立刻换到新知识库）
 #   问答     ask(问题,历史) → 读全局 agent 变量（被 rebuild 替换后自动用新库）
 #
 # 代码分六段：
 #   第1段  构建混合检索（BM25 + 向量库 + RRF 融合）→ 返回 ensemble
 #   第2段  用 @tool 把 ensemble 包成 retrieve 工具，create_agent 创建 Agent
-#   第3段  init()：启动时加载/重建默认库并构建 Agent（含云端部署守卫）
+#   第3段  init()：空库初始化（没有知识库时 retrieve 返回提示，引导用户上传）
 #   第4段  rebuild()：上传新文档后 重建向量库 + 重建 Agent
 #   第5段  ask()：可复用接口函数（历史拼进 messages = 多轮记忆）
 #   第6段  命令行对话循环
@@ -21,7 +21,6 @@
 import sys
 sys.stdout.reconfigure(encoding="utf-8")  # 修复 Windows 控制台中文乱码
 
-import os
 import config
 import retrieval_core
 
@@ -76,6 +75,10 @@ def build_agent(ens, kb_name="知识库"):
     def retrieve(query: str) -> str:
         """根据用户问题，从当前知识库检索相关资料。"""  # docstring 必须是普通字符串，不能是 f-string
         try:
+            # 空库状态：还没上传任何文档，直接告诉模型"没有知识库"
+            if ens is None:
+                print("\n⚠️ 当前没有知识库（用户还未上传文档）\n")
+                return "当前还没有任何知识库。"
             docs = ens.invoke(query)
             print("\n🔍 已检索知识库\n")
             return "\n\n".join(d.page_content for d in docs)  # 把检索到的几段拼成一个长字符串返回（工具返回只能是字符串，模型才好读）
@@ -87,29 +90,25 @@ def build_agent(ens, kb_name="知识库"):
         model=llm,
         tools=[retrieve],
         system_prompt=(
-            f"你是文档问答助手，知识库是「{kb_name}」。"
-            "用户问知识库相关问题时，先检索知识库再回答；"
-            "闲聊或库外问题直接回答，不要检索；"
-            "只根据检索到的资料回答，禁止用你自己的常识补充或编造；"
-            "资料里没有就直说'库里没有'。"
+            "你是文档问答助手。遵守以下规则：\n"
+            "1. 闲聊（打招呼、问你是谁、寒暄等）或不需要知识库的问题，直接正常回答，不要调用工具。\n"
+            "2. 知识类问题（需要查文档才能回答的事实性问题）必须调用 retrieve 工具，不能凭自己的常识回答。\n"
+            "3. 如果 retrieve 返回'当前还没有任何知识库'，说明用户还没上传文档，"
+            "请回答：'我还不知道这个问题哦，请上传你的文档让我学习学习吧'。\n"
+            "4. 如果检索到了资料，只根据这些资料回答；资料里没有就直说'库里没有'，禁止编造。"
         )
     )
     return agent
 
 
-''' 第3段：init() 启动初始化（含云端部署守卫）'''
+''' 第3段：init() 启动初始化（空库起步，等用户上传文档）'''
 def init():
     global ensemble, agent
-    # 部署守卫：云端没有向量库时，启动自动重建（本地已有 chroma_db 则跳过）
-    if not os.path.isdir(config.PERSIST_DIR):
-        print("🚀 首次启动：检测到向量库不存在，正在从源文档重建（约10-60秒）...")
-        doc_path = str(config.BASE_DIR / "data" / "汽配知识介绍.txt")
-        retrieval_core.build_vectorstore([doc_path])
-
-    vs = retrieval_core.load_vectorstore()  # 加载已有向量库
-    ensemble = build_ensemble(vs)           # 构建混合检索
-    agent = build_agent(ensemble, "默认汽配知识库")  # 构建 Agent
-    print("✅ Agent 就绪，可以开始提问")
+    # 不再自动加载默认知识库 —— 空库起步
+    # ensemble=None 表示"还没有任何知识库"，retrieve 工具会返回对应提示
+    ensemble = None
+    agent = build_agent(ensemble, "用户上传文档")  # 构建 Agent（闲聊可直接答，知识类问题引导上传）
+    print("✅ Agent 就绪（暂无知识库，上传文档后可提问）")
 
 
 ''' 第4段：rebuild() 上传新文档后重建整个问答链路 '''

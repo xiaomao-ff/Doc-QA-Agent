@@ -19,15 +19,16 @@
 3. **Agentic 决策（create_agent + @tool）**
    - 检索封装成工具，由模型自主决定"要不要检索"
    - 知识类问题 → 检索知识库；闲聊 → 直接回答，不浪费工具调用
-4. **防幻觉硬约束**
+4. **防幻觉硬约束 + 空库引导**
    - `system_prompt` 定死红线：必须检索、库里没有就直说、禁止编造
+   - **空库起步**：未上传文档时，闲聊可答、知识类问题引导"请上传文档让我学习"
    - 实测 bad case：「火花塞价格」→ 如实回答"库里没有"，绝不瞎编
 5. **多轮对话记忆**
    - 前端：历史对话显示在上方，下方是新的输入框
    - 后端：历史消息拼进 prompt 一起发送，Agent 记住上下文
    - 复用 `ask(question, history)`：命令行 / FastAPI / Streamlit 三端共用
 6. **完整工程链路**
-   - 云端部署：requirements 置仓库根 + Secrets 管密钥 + 启动自动重建向量库
+   - 云端部署：requirements 置仓库根 + Secrets 管密钥 + 空库起步、上传即建库
 
 ---
 
@@ -41,9 +42,9 @@ Doc-QA-Agent/
 ├── api.py               # 接口层：FastAPI POST /ask + /upload（供外部系统调用）
 ├── app.py               # 展示层：Streamlit 网页（上传区 + 解析状态 + 对话记忆）
 ├── data/
-│   └── 汽配知识介绍.txt  # 示例默认知识库（首次启动自动建库）
+│   └── 汽配知识介绍.txt  # 示例文档（可选，不自动建库，仅供测试上传）
 ├── uploads/             # 用户上传的文档（运行时生成）
-└── chroma_db/           # ChromaDB 持久化（git 忽略，云端自动重建）
+└── chroma_db/           # ChromaDB 持久化（git 忽略，上传文档后生成）
 ```
 
 ## 🧠 架构流程
@@ -76,7 +77,6 @@ pip install -r requirements.txt
 
 # 3. 进入项目目录并运行（任选其一）
 cd Doc-QA-Agent
-python retrieval_core.py   # 重建默认向量库
 python qa_agent.py         # 命令行问答
 uvicorn api:app --reload   # FastAPI 接口 → http://127.0.0.1:8000/docs
 streamlit run app.py       # Streamlit 网页 → http://localhost:8501
@@ -92,27 +92,22 @@ streamlit run app.py       # Streamlit 网页 → http://localhost:8501
 
 1. `requirements.txt` 放在**仓库根目录**（不是子目录！否则云端装不上依赖）
 2. `.env` 不进仓库，改用平台 **Secrets** 填 `siliconflow_api = "sk-xxx"`
-3. 向量库 `chroma_db/` 不提交 git，`qa_agent.py` 里加了**启动自动重建守卫**：
-   ```python
-   if not os.path.isdir(config.PERSIST_DIR):
-       doc_path = str(config.BASE_DIR / "data" / "汽配知识介绍.txt")
-       retrieval_core.build_vectorstore([doc_path])
-   ```
+3. 向量库 `chroma_db/` 不提交 git。系统**空库起步**：不自动加载默认知识库，用户上传文档时才动态建库
 4. Streamlit Cloud 中 Deploy：Main file path 填 `Doc-QA-Agent/app.py`
 
-> 部署坑总结：依赖文件位置 / Secrets 密钥 / 向量库空库——三个坑各有解法，见 qa_agent.py 顶部守卫。
+> 部署坑总结：依赖文件位置 / Secrets 密钥 / 首次无库——三个坑各有解法。
 
 ---
 
-## 🧪 实测案例（默认汽配库）
+## 🧪 实测案例
 
-| 提问 | 行为 | 结果 |
+| 提问 | 场景 | 结果 |
 |------|------|------|
-| 刹车片多久换一次 | 检索知识库 | ✅ 给出更换周期/判断标准 |
-| 打火的那个东西多久换一次 | 换说法 → 语义检索命中 | ✅ 正确识别"火花塞" |
-| 火花塞价格一般多少 | 检索（库中无价格） | ✅ 直说"库里没有"，未编造 |
-| 你好，你叫什么 | 不检索，直接回答 | ✅ 闲聊正常 |
-| 上传法律文档后提问条款 | 检索新上传的库 | ✅ 围绕新领域回答 |
+| 你好 | 未上传文档 | ✅ 正常闲聊，友好回复 |
+| 刹车片多久换一次 | 未上传文档 | ✅ 引导"我还不知道这个问题哦，请上传你的文档让我学习学习吧" |
+| 刹车片多久换一次 | 已上传汽配文档 | ✅ 给出更换周期/厚度标准 |
+| 打火的那个东西多久换一次 | 已上传文档 | ✅ 换说法 → 语义检索命中"火花塞" |
+| 火花塞价格一般多少 | 已上传文档（库中无价格） | ✅ 直说"库里没有"，未编造 |
 
 ## 🛠️ 技术栈
 
