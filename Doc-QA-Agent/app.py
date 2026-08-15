@@ -3,12 +3,21 @@
 # 导入 Streamlit 库，用于构建 Web 交互界面
 import streamlit as st
 
-# 从自定义模块 qa_agent 导入 ask（问答）和 rebuild（上传后重建知识库）
-# 复用同一套问答逻辑，包括检索和 LLM 调用
-from qa_agent import ask, rebuild
-
 # 页面全局配置（可设置浏览器标签页标题和图标）
 st.set_page_config(page_title="文档问答助手", page_icon="📚")
+
+# 会话隔离：每个浏览器会话（st.session_state 本身）对应一个 session_id
+# 不同用户打开页面互不影响——每个人的知识库和 Agent 独立（改进1：多用户隔离）
+import uuid
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())[:8]
+# 复用同一套问答逻辑，包括检索和 LLM 调用
+from qa_agent import ask, rebuild, init
+# 只在"首次进入页面"时初始化该会话的 Agent（init 已幂等，重复调用也不删库）
+# 注意：不能每次 rerun 都重设 session_id！否则上传的知识库会对不上号
+if "agent_ready" not in st.session_state:
+    init(st.session_state.session_id)
+    st.session_state.agent_ready = True
 
 # 在页面顶部显示一个大标题
 st.title("📚 文档问答助手")
@@ -44,17 +53,26 @@ with st.sidebar:
                     os.makedirs(config.UPLOAD_DIR, exist_ok=True)
 
                     saved_paths = []  # 收集保存后的文件路径
+                    # 改进4：后端校验——格式白名单 + 大小限制，不只靠前端 type 限制
+                    ALLOWED = {".pdf", ".docx", ".txt", ".md"}
+                    MAX_SIZE = 20 * 1024 * 1024
                     for f in uploaded_files:
-                        # f.name：文件名；f.getvalue()：文件的二进制内容
+                        ext = os.path.splitext(f.name or "")[1].lower()
+                        if ext not in ALLOWED:
+                            raise ValueError(f"不支持的文件格式：{f.name}（仅支持 PDF/Word/TXT/Markdown）")
+                        content = f.getvalue()
+                        if len(content) > MAX_SIZE:
+                            raise ValueError(f"文件过大：{f.name}（上限 20MB）")
+                        # f.name：文件名；content：文件的二进制内容
                         save_path = os.path.join(config.UPLOAD_DIR, f.name)
                         with open(save_path, "wb") as fp:  # wb = 写二进制
-                            fp.write(f.getvalue())
+                            fp.write(content)
                         saved_paths.append(save_path)
                         status.write(f"✅ 已接收：{f.name}")
 
-                    # 调用 rebuild：解析 → 切块 → 向量化入库 → 重建 Agent
+                    # 调用 rebuild：解析 → 切块 → 向量化入库 → 重建该会话的 Agent
                     status.write("🔄 正在解析、切块并写入向量库（首次较慢）...")
-                    rebuild(saved_paths)
+                    rebuild(saved_paths, session_id=st.session_state.session_id)
 
                     # 解析完成：状态标签变绿勾 ✓，并折叠起来
                     status.update(
@@ -89,9 +107,9 @@ if user_input:
     with st.chat_message("user"):
         st.write(user_input)
 
-    # 调用问答函数 ask，传入用户问题 + 当前会话历史
+    # 调用问答函数 ask，传入用户问题 + 当前会话历史（按会话隔离）
     # ask 返回 LLM 生成的回答（字符串）
-    answer = ask(user_input, st.session_state.history)
+    answer = ask(user_input, st.session_state.history, session_id=st.session_state.session_id)
 
     # 显示助手回答
     with st.chat_message("assistant"):

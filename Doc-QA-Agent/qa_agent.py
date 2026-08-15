@@ -34,13 +34,18 @@ from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(  # 大模型客户端（全局，rebuild 时复用）
     model=config.LLM_MODEL,
     api_key=config.API_KEY,
-    base_url=config.BASE_URL
+    base_url=config.BASE_URL,
+    max_retries=3,  # 改进5：失败重试（指数退避，OpenAI 客户端内置）
+    timeout=60.0,   # 超时保护
 )
 
-# 全局变量：当前正在使用的 混合检索器 和 Agent
-# rebuild() 会替换这两个值，ask() 读最新值 → 上传后立刻换库问答
-ensemble = None
-agent = None
+# 全局变量：按"会话(session)"隔离的 混合检索器 和 Agent
+# 之前是单例（ensemble/agent 各一个），多用户并发上传会互相覆盖；
+# 现在改成 dict：key 是 session_id，每个用户/会话有自己的库和 Agent。
+# rebuild(session_id) 只替换该会话的实例，不影响其他会话。
+ENSEMBLES: dict = {}   # session_id -> EnsembleRetriever（混合检索）
+AGENTS: dict = {}      # session_id -> Agent
+DEFAULT_SESSION = "default"  # 不传 session_id 时用的会话（兼容旧调用）
 
 
 ''' 第1段：从向量库构建混合检索（BM25 + 向量 + RRF）→ 返回 ensemble '''
@@ -69,19 +74,30 @@ def build_ensemble(vs):
 
 
 ''' 第2段：知识库检索工具 + 用 create_agent 创建 Agent → 返回 agent '''
-# retrieve 是模块级函数，通过全局 ensemble 变量访问当前知识库
+# retrieve 是模块级函数，通过"当前会话"访问对应的知识库
 # （改成模块级是为了能单独测试它，也避免每次 build_agent 重新定义函数）
+# 注意：@tool 不能直接接收 session_id，所以 ask() 在调用前会把 CURRENT_SESSION
+#       设成当前会话，retrieve 用 CURRENT_SESSION 去 ENSEMBLES 里取对应的检索器。
+CURRENT_SESSION = DEFAULT_SESSION
+
+
 @tool  # 装饰器，将下面的普通函数升级成 LangChain Tool (自动提取函数签名、docstring 发给模型)
 def retrieve(query: str) -> str:
     """根据用户问题，从当前知识库检索相关资料。"""  # docstring 必须是普通字符串，不能是 f-string
     try:
-        # 空库状态：还没上传任何文档，直接告诉模型"没有知识库"
+        # 空库状态：该会话还没上传任何文档，直接告诉模型"没有知识库"
+        ensemble = ENSEMBLES.get(CURRENT_SESSION)
         if ensemble is None:
-            print("\n⚠️ 当前没有知识库（用户还未上传文档）\n")
+            print("\n⚠️ 当前会话没有知识库（用户还未上传文档）\n")
             return "当前还没有任何知识库。"
         docs = ensemble.invoke(query)
         print("\n🔍 已检索知识库\n")
-        return "\n\n".join(d.page_content for d in docs)  # 把检索到的几段拼成一个长字符串返回（工具返回只能是字符串，模型才好读）
+        # 把检索到的几段拼成长字符串返回，并带上来源（引用溯源，见 retrieve 的 metadata）
+        parts = []
+        for d in docs:
+            src = d.metadata.get("source", "未知来源")
+            parts.append(f"【来源：{src}】\n{d.page_content}")
+        return "\n\n".join(parts)  # 工具返回只能是字符串，模型才好读
     except Exception as e:
         return f"检索失败：{e}"
 
@@ -97,50 +113,95 @@ def build_agent():
             "2. 知识类问题（需要查文档才能回答的事实性问题）必须调用 retrieve 工具，不能凭自己的常识回答。\n"
             "3. 如果 retrieve 返回'当前还没有任何知识库'，说明用户还没上传文档，"
             "请回答：'我还不知道这个问题哦，请上传你的文档让我学习学习吧'。\n"
-            "4. 如果检索到了资料，只根据这些资料回答；资料里没有就直说'库里没有'，禁止编造。"
+            "4. 如果检索到了资料，只根据这些资料回答；资料里没有就直说'库里没有'，禁止编造。\n"
+            "5. 回答末尾请标注引用来源：列出你依据的文档文件名（检索结果中的【来源：xxx】）。"
         )
     )
     return agent
 
 
-''' 第3段：init() 启动初始化（空库起步，等用户上传文档）'''
-def init():
-    global ensemble, agent
-    # 不再自动加载默认知识库 —— 空库起步
-    # ensemble=None 表示"还没有任何知识库"，retrieve 工具会返回对应提示
-    ensemble = None
-    agent = build_agent()  # 构建 Agent（闲聊可直接答，知识类问题引导上传）
-    print("✅ Agent 就绪（暂无知识库，上传文档后可提问）")
+''' 第3段：init() 初始化一个会话（空库起步，等用户上传文档）'''
+def init(session_id=DEFAULT_SESSION):
+    """确保某个会话可用：会话不存在则创建空库 Agent。
+    幂等设计（重要）：不删已有知识库！
+    之前这里有 ENSEMBLES.pop()，导致 Streamlit 每次 rerun 调用 init()
+    时把用户刚上传的知识库清掉，表现为"上传了却一直提示空库"。已修复。
+    """
+    if session_id in AGENTS:
+        return  # 会话已存在：保持现状（含已上传的知识库），不重建
+    AGENTS[session_id] = build_agent()  # 创建 Agent（闲聊可直接答，知识类问题引导上传）
+    print(f"✅ 会话 [{session_id}] Agent 就绪（暂无知识库，上传文档后可提问）")
 
 
-''' 第4段：rebuild() 上传新文档后重建整个问答链路 '''
-def rebuild(doc_paths):
-    global ensemble, agent
-    print("🔄 正在解析文档并重建知识库...")
-    # 清空旧库 + 重新建库（reset=True 会先删掉旧 collection，避免新旧混一起）
-    vs = retrieval_core.build_vectorstore(doc_paths, reset=True)
-    ensemble = build_ensemble(vs)                       # 重建混合检索
-    agent = build_agent()                               # 重建 Agent
-    print(f"✅ 重建完成，共 {len(doc_paths)} 个文档已入库，可以提问了")
+''' 第4段：rebuild() 上传新文档后重建某个会话的问答链路 '''
+def rebuild(doc_paths, session_id=DEFAULT_SESSION):
+    print(f"🔄 会话 [{session_id}] 正在解析文档并重建知识库...")
+    # 每个会话用独立的 collection（session_id 拼进 collection 名），
+    # 这样 A 上传不会影响 B 的库（改进1 真正生效：不止内存隔离，存储也隔离）
+    vs = retrieval_core.build_vectorstore(
+        doc_paths, reset=True,
+        collection_name=f"{config.COLLECTION_NAME}_{session_id}",
+    )
+    ENSEMBLES[session_id] = build_ensemble(vs)   # 重建该会话的混合检索
+    AGENTS[session_id] = build_agent()           # 重建该会话的 Agent
+    print(f"✅ 会话 [{session_id}] 重建完成，共 {len(doc_paths)} 个文档已入库，可以提问了")
 
-''' 第5段：模块导入时自动初始化（命令行/API/网页 import 后直接用）'''
+''' 第5段：模块导入时自动初始化默认会话（命令行/API/网页 import 后直接用）'''
 init()
 
 ''' 第6段：可复用的 ask() 函数（API / 网页都可以 import 它）'''
 
-MAX_HISTORY = 10  # 滑动窗口：最多携带 10 条历史消息（≈5 轮对话），防上下文无限膨胀
+MAX_HISTORY = 10     # 滑动窗口：最多携带 10 条历史消息（≈5 轮对话），防上下文无限膨胀
+SUMMARY_STEP = 20    # 触发摘要压缩的阈值：历史超过 20 条时，把最早的压成摘要
+SUMMARY_BUDGET = 6   # 摘要保留的条数预算（摘要算 1 条消息）
+
+def _summarize_history(messages):
+    """改进2：长对话摘要压缩。
+    记忆两级策略：
+      ≤ MAX_HISTORY(10) 条        → 全量保留，不处理；
+      MAX_HISTORY ~ SUMMARY_STEP(20) 条 → 纯滑动窗口截断（省 LLM 调用）；
+      > SUMMARY_STEP 条           → 把最旧的压缩成一句摘要，保留"长期记忆 + 短期窗口"。
+    """
+    if len(messages) <= MAX_HISTORY:
+        return messages
+    # 超过 SUMMARY_STEP 才做摘要压缩；中间地带只用滑动窗口截断
+    if len(messages) <= SUMMARY_STEP:
+        return messages[-MAX_HISTORY:]
+    # 最旧的 N 条拿去压缩成摘要
+    old = messages[:-MAX_HISTORY]
+    recent = messages[-MAX_HISTORY:]
+    dialog = "\n".join(f"{m['role']}: {m['content']}" for m in old)
+    try:
+        resp = llm.invoke(
+            f"把下面的对话压缩成一句中文摘要（保留关键人物/事实/用户偏好，20 字以内）：\n{dialog}"
+        )
+        summary = resp.content.strip()
+        return [{"role": "system", "content": f"【长期记忆摘要】{summary}"}] + recent
+    except Exception:
+        # 压缩失败就退回纯滑动窗口（丢弃最旧的），不让一次失败拖垮对话
+        return recent
 
 
-def ask(question, history):
+def ask(question, history, session_id=DEFAULT_SESSION):
     """单轮问答：历史 + 当前问题 → 回答。
 
     ask() 是给外部用的"接口函数"：命令行、FastAPI、网页全都调它，
     保持一套问答逻辑到处复用。
-    滑动窗口：只取最近 MAX_HISTORY 条历史，太长的对话自动丢弃最旧的，
-    避免消息无限堆积把模型上下文窗口撑爆。
+    session_id：哪个会话的库和 Agent 来答（多用户隔离的关键参数）。
+    记忆两级：
+      短期窗口：只取最近 MAX_HISTORY 条历史；
+      长期记忆：超过 SUMMARY_STEP 条时，把最旧的压成一句摘要（见 _summarize_history），
+                既保留长期上下文，又防止消息无限堆积撑爆上下文窗口。
     """
-    recent = history[-MAX_HISTORY:]  # 只保留最近 N 条历史（丢弃最早的消息）
-    messages = recent + [{"role": "user", "content": question}]  # 最近历史 + 用户这一句（这就是"记忆"）
+    global CURRENT_SESSION
+    # 让 retrieve 工具知道该去哪个会话的库检索
+    CURRENT_SESSION = session_id
+    agent = AGENTS.get(session_id)
+    if agent is None:
+        init(session_id)  # 会话不存在则先初始化（懒加载）
+        agent = AGENTS[session_id]
+
+    messages = _summarize_history(history) + [{"role": "user", "content": question}]
     result = agent.invoke({"messages": messages})                 # 调 Agent（让它自主决定要不要检索）
     return result["messages"][-1].content                         # 取最后一条消息 = Agent 最终回答
 

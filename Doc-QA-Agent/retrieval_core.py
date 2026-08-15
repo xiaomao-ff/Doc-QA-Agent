@@ -7,20 +7,38 @@ from langchain_core.embeddings import Embeddings
 
 client = OpenAI(
     api_key=config.API_KEY,
-    base_url=config.BASE_URL
+    base_url=config.BASE_URL,
+    max_retries=3,          # OpenAI 客户端内置重试（网络类错误）
+    timeout=60.0,           # 超时保护，避免一次慢调用卡死
 )
+
+def _embed_with_retry(call_embed, texts, attempts=3):
+    """改进5：失败重试——指数退避。
+    对 embedding 调用做最多 attempts 次重试：第一次失败后等 1s、再 2s、再 4s（指数退避），
+    解决 SiliconFlow 偶发超时/限流导致的建库失败。
+    """
+    import time
+    for i in range(attempts):
+        try:
+            return call_embed(texts)
+        except Exception as e:
+            if i == attempts - 1:
+                raise  # 最后一次失败不再重试，直接抛给上层
+            wait = 2 ** i  # 1s, 2s, 4s...
+            print(f"⚠️ Embedding 调用失败（第 {i+1}/{attempts} 次），{wait}s 后重试：{e}")
+            time.sleep(wait)
 
 class SiliconflowEmbedding(Embeddings):
     def embed_documents(self, texts):
-        resp = client.embeddings.create(
-            model=config.EMBEDDING_MODEL,
-            input=texts
+        resp = _embed_with_retry(
+            lambda t: client.embeddings.create(model=config.EMBEDDING_MODEL, input=t),
+            texts,
         )
         return [r.embedding for r in resp.data]
     def embed_query(self, text):
-        resp = client.embeddings.create(
-            model=config.EMBEDDING_MODEL,
-            input=text
+        resp = _embed_with_retry(
+            lambda t: client.embeddings.create(model=config.EMBEDDING_MODEL, input=t),
+            text,
         )
         return resp.data[0].embedding
 

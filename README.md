@@ -3,7 +3,7 @@
 > 企业级文档问答系统 —— 基于 **Agentic RAG**（检索增强生成）的端到端落地项目。
 > 支持**用户自助上传文档**（PDF / Word / TXT），任意领域即传即问；
 > 语义检索 + 关键词检索 + 模型自主决策，内置多轮对话记忆。
-> 2026 年技术栈：LangChain 1.x + create_agent / @tool + LangGraph（备选方案）。
+> 2026 年技术栈：LangChain 1.x + create_agent。
 
 ## ✨ 核心亮点
 
@@ -118,18 +118,19 @@ python -m pytest tests/test_integration.py -v -m integration
 
 ---
 
-## ⚠️ 已知限制（面试可聊改进方向）
+## ✅ 已知限制的改进（已实现）
 
-1. **单用户设计**：`ensemble` / `agent` 是模块级全局变量，多用户并发上传会互相覆盖。
-   改进方向：按会话（session）隔离，每个用户独立的 vectorstore + agent。
-2. **历史窗口固定**：滑动窗口固定 10 条，长对话会丢弃最早内容。
-   改进方向：用 LLM 把旧历史压缩成摘要，保留"长期记忆 + 短期窗口"。
-3. **无引用溯源**：回答不标注来自哪个文档哪一段。
-   改进方向：检索时保留 metadata 来源，回答末尾附引用。
-4. **上传文件无后端校验**：只靠前端限制格式。
-   改进方向：后端校验文件大小、格式白名单、防恶意文件。
-5. **无失败重试**：LLM / Embedding 调用一次失败即报错。
-   改进方向：指数退避重试 + 熔断。
+1. **多用户隔离**：`ensemble` / `agent` 从全局单例改为 `dict[session_id]`，`ask()` / `rebuild()` 支持 `session_id`，Streamlit 每会话分配 uuid、FastAPI 请求体带 `session_id`，多用户互不干扰。
+2. **长对话摘要压缩**：历史 ≤10 条全量保留，10~20 条滑动窗口截断，>20 条时用 LLM 把最旧内容压缩成一句"长期记忆摘要"再带入——两级记忆，既防膨胀又不丢长期上下文。
+3. **引用溯源**：检索结果带 `【来源：文件名】` 元数据，system_prompt 要求回答末尾附参考来源，实测回答会标注「📚 参考来源：《汽配知识介绍.txt》」。
+4. **后端文件校验**：`/upload` 与网页上传均做格式白名单（.pdf/.docx/.txt/.md）+ 单文件 20MB 上限校验，不再只靠前端限制。
+5. **失败重试**：Embedding 调用加指数退避重试（1s/2s/4s，3 次），LLM 客户端开 `max_retries=3 + 超时保护`，解决 API 偶发超时/限流。
+
+## 🧩 仍待改进（后续方向）
+
+- 摘要压缩目前固定阈值，可按对话长度自适应
+- 引用溯源到"段落级"（现在到文件名级）
+- 重试只覆盖网络类错误，未做熔断/降级
 
 ---
 
@@ -146,6 +147,4 @@ python -m pytest tests/test_integration.py -v -m integration
 ## 🛠️ 技术栈
 
 Python · LangChain 1.x · LangGraph 1.x · create_agent / @tool · FastAPI · Streamlit · ChromaDB · BAAI/bge-m3 · jieba / BM25（rank-bm25）· RRF · pypdf · docx2txt · SiliconFlow · Git / GitHub · python-dotenv
-
-> 💡 零弃用依赖：`langchain-community` 已于 2026-05 停服（sunset）。本项目自实现 `BM25Retriever`（`bm25_retriever.py`）与多格式加载器（pypdf / docx2txt / 原生读取），不依赖任何已停服包。
 
