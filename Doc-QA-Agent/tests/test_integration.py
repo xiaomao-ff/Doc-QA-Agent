@@ -1,6 +1,6 @@
 # test_integration.py —— 端到端集成测试（调真实 LLM / Embedding API）
 # 默认跳过，手动运行：cd Doc-QA-Agent && python -m pytest tests/test_integration.py -v -m integration
-# 需要 .env 里配置好 siliconflow_api
+# 需要 .env 里配置好 api_key
 
 import sys
 from pathlib import Path

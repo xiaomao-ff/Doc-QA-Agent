@@ -3,7 +3,6 @@
 # 核心思路：Agentic RAG（create_agent + @tool）
 # 把"知识库混合检索"封装成一个 @tool 工具，让大模型自主决定是否检索。
 # 防幻觉靠 system_prompt 硬约束，不让模型用常识编造。
-# （LangGraph 强流程备选实现见 langgraph_v2.py）
 #
 # 本版本支持"上传文档即建库"，空库起步：
 #   启动时   init()         → 空库初始化：没有默认知识库，闲聊可直接答，知识类问题引导上传
